@@ -9,7 +9,9 @@ mod identity;
 
 use std::ffi::c_char;
 use std::ptr;
+use std::str::FromStr;
 
+use crate::XmtpError;
 use crate::error::{self, Result};
 use crate::ffi::{
     FfiList, OwnedHandle, ffi_usize, read_borrowed_strings, take_c_string, to_c_string, to_ffi_len,
@@ -413,6 +415,118 @@ impl Client {
                 self.handle.as_ptr(),
                 &raw const opts,
                 ptr::null(),
+            )
+        })
+    }
+
+    /// Send a sync archive to the sync group with the given pin.
+    pub fn send_sync_archive(&self) -> Result<()> {
+        let opts = xmtp_sys::XmtpFfiArchiveOptions::default();
+        // SAFETY: Valid handle; `opts` is a stack-allocated default struct.
+        error::check(unsafe {
+            xmtp_sys::xmtp_device_sync_send_archive(
+                self.handle.as_ptr(),
+                &raw const opts,
+                ptr::null(),
+                ptr::null(),
+            )
+        })
+    }
+
+    /// Process a sync archive matching the given pin.
+    /// Pass null for `pin` to process the latest archive.
+    pub fn process_sync_archive_with_pin(&self) -> Result<()> {
+        error::check(unsafe {
+            xmtp_sys::xmtp_device_sync_process_archive(self.handle.as_ptr(), ptr::null())
+        })
+    }
+
+    /// List archives available for import in the sync group.
+    /// `days_cutoff` limits how far back to look.
+    /// Caller must free with [`xmtp_available_archive_list_free`].
+    // pub fn device_sync_list_available_archives(&self) -> Result<()> {
+    //     // days_cutoff: i64,
+    //     // out: *mut *mut XmtpFfiAvailableArchiveList,
+    //     error::check(unsafe {
+    //         xmtp_sys::xmtp_device_sync_list_available_archives(self.handle.as_ptr(), 0, ptr::null())
+    //     })
+    // }
+
+    /// Export an archive to a local file.
+    /// `key` must be at least 32 bytes (encryption key).
+    pub fn create_file_archive(&self, path: &str, key: &[u8; 32]) -> Result<()> {
+        let path = to_c_string(path)?;
+        // let opts = xmtp_sys::XmtpFfiArchiveOptions::default();
+        let opts = xmtp_sys::XmtpFfiArchiveOptions {
+            elements: 1 << 0 | 1 << 1,        // 3
+            start_ns: 0,                      // no filter
+            end_ns: 0,                        // no filter
+            exclude_disappearing_messages: 0, // include them
+        };
+        error::check(unsafe {
+            xmtp_sys::xmtp_device_sync_create_archive(
+                self.handle.as_ptr(),
+                path.as_ptr(),
+                &opts,
+                key.as_ptr(),
+                32,
+            )
+        })
+    }
+
+    /// Export an archive to bytes.
+    /// `key` must be at least 32 bytes (encryption key).
+    pub fn create_bytes_archive(&self, key: &[u8; 32]) -> Result<Vec<u8>> {
+        let opts = xmtp_sys::XmtpFfiArchiveOptions {
+            elements: 1 << 0 | 1 << 1,        // 3
+            start_ns: 0,                      // no filter
+            end_ns: 0,                        // no filter
+            exclude_disappearing_messages: 0, // include them
+        };
+        let mut out_data: *mut u8 = ptr::null_mut();
+        let mut out_len: usize = 0;
+        error::check(unsafe {
+            xmtp_sys::xmtp_device_sync_create_bytes_archive(
+                self.handle.as_ptr(),
+                &opts,
+                key.as_ptr(),
+                32,
+                &mut out_data,
+                &mut out_len,
+            )
+        })?;
+
+        if out_data.is_null() {
+            // map this to one of your error variants
+            return Err(XmtpError::Io("Archive export returned no data".to_string()));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(out_data, out_len) }.to_vec();
+        unsafe { xmtp_sys::xmtp_free_bytes(out_data, out_len as i32) };
+        Ok(bytes)
+    }
+
+    /// Export an archive to a local file for device history sync.
+    /// `key` must be at least 32 bytes (encryption key).
+    // pub fn import_file_archive(&self, data: &[u8], key: &[u8; 32]) -> Result<()> {
+    //     error::check(unsafe {
+    //         xmtp_sys::xmtp_device_sync_import_archive_from_bytes(
+    //             self.handle.as_ptr(),
+    //             data.as_ptr(),
+    //             key.as_ptr(),
+    //             32,
+    //         )
+    //     })
+    // }
+
+    /// Export an archive to a bytes for device history sync.
+    /// `key` must be at least 32 bytes (encryption key).
+    pub fn import_bytes_archive(&self, data: &[u8], key: &[u8; 32]) -> Result<()> {
+        error::check(unsafe {
+            xmtp_sys::xmtp_device_sync_import_archive_from_bytes(
+                self.handle.as_ptr(),
+                data.as_ptr(),
+                key.as_ptr(),
+                32,
             )
         })
     }

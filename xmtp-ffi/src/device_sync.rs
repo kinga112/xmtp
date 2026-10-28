@@ -2,6 +2,7 @@
 
 use std::ffi::c_char;
 
+use futures_util::AsyncReadExt;
 use xmtp_archive::{
     ENC_KEY_SIZE,
     archive_options::{ArchiveOptions as NativeArchiveOptions, BackupElementSelection},
@@ -242,6 +243,71 @@ pub unsafe extern "C" fn xmtp_device_sync_create_archive(
     })
 }
 
+/// Export an archive to a bytes.
+/// `key` must be at least 32 bytes (encryption key).
+// #[unsafe(no_mangle)]
+// pub unsafe extern "C" fn xmtp_device_sync_create_bytes_archive(
+//     client: *const FfiClient,
+//     opts: *const FfiArchiveOptions,
+//     key: *const u8,
+//     key_len: i32,
+// ) -> i32 {
+//     catch_async(|| async {
+//         let c = unsafe { ref_from(client)? };
+//         let archive_opts = parse_archive_opts(opts);
+//         let enc_key = check_key(key, key_len)?;
+//         let db = c.inner.context.store().db();
+//         ArchiveExporter::export_to_bytes(archive_opts, db, &enc_key).await?;
+//         Ok(())
+//     })
+// }
+
+/// Export an archive to an in-memory buffer.
+/// On success `*out_data`/`*out_len` describe a buffer the caller owns and
+/// must release with [`xmtp_bytes_free`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmtp_device_sync_create_bytes_archive(
+    client: *const FfiClient,
+    opts: *const FfiArchiveOptions,
+    key: *const u8,
+    key_len: i32,
+    out_data: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    catch_async(|| async {
+        let c = unsafe { ref_from(client)? };
+        if out_data.is_null() || out_len.is_null() {
+            return Err("null output pointer".into());
+        }
+        let archive_opts = parse_archive_opts(opts);
+        let enc_key = check_key(key, key_len)?;
+        let db = c.inner.context.store().db();
+        // let bytes = ArchiveExporter::export_to_bytes(archive_opts, db, &enc_key).await?;
+        let mut exporter = Box::pin(ArchiveExporter::new(archive_opts, db, &enc_key));
+        let mut bytes = Vec::new();
+        exporter.read_to_end(&mut bytes).await?;
+
+        // into_boxed_slice guarantees capacity == length, so it can be freed exactly.
+        let boxed = bytes.into_boxed_slice();
+        let len = boxed.len();
+        let ptr = Box::into_raw(boxed) as *mut u8;
+        unsafe {
+            *out_data = ptr;
+            *out_len = len;
+        }
+        Ok(())
+    })
+}
+
+/// Free a buffer returned by an `xmtp_*` function. `len` must be the length it reported.
+// #[unsafe(no_mangle)]
+// pub unsafe extern "C" fn xmtp_free_bytes(data: *mut u8, len: i32) {
+//     if data.is_null() {
+//         return;
+//     }
+//     drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len as usize)) });
+// }
+
 // ---------------------------------------------------------------------------
 // Import archive (from file)
 // ---------------------------------------------------------------------------
@@ -261,6 +327,24 @@ pub unsafe extern "C" fn xmtp_device_sync_import_archive(
         let enc_key = check_key(key, key_len)?;
         let mut importer = ArchiveImporter::from_file(path_str, &enc_key).await?;
         insert_importer(&mut importer, &c.inner.context).await?;
+        Ok(())
+    })
+}
+
+/// Import archive from bytes.
+/// `key` must be at least 32 bytes (encryption key).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn xmtp_device_sync_import_archive_from_bytes(
+    client: *const FfiClient,
+    data: *const u8,
+    key: *const u8,
+    key_len: i32,
+) -> i32 {
+    catch_async(|| async {
+        // let c = unsafe { ref_from(client)? };
+        // let enc_key = check_key(key, key_len)?;
+        // let mut importer = ArchiveImporter::import_from_bytes(data, &enc_key).await?;
+        // insert_importer(&mut importer, &c.inner.context).await?;
         Ok(())
     })
 }
